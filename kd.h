@@ -186,12 +186,13 @@ typedef struct kdContext {
 
 void kdTime(KD,int *,int *);
 int kdInit(KD *,int,float *,float *);
-void kdReadTipsy(KD,FILE *,int,int,int);
+void kdReadTipsy(KD,FILE *,int,int,int,int);
 void kdBuildTree(KD);
 int kdFoF(KD,float);
 int kdTooSmall(KD,int);
 void kdOrder(KD);
 void kdOutGroup(KD,char *);
+void kdOutGTP(KD,char *,int);
 void kdFinish(KD);
 
 #endif

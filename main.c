@@ -15,6 +15,7 @@ void usage(void)
 	fprintf(stderr,"   [-o <Output Name>] [-p <xyzPeriod>] [-c <xyzCenter>]\n");
 	fprintf(stderr,"   [-px <xPeriod>] [-py <yPeriod>] [-pz <zPeriod>]\n");
 	fprintf(stderr,"   [-cx <xCenter>] [-cy <yCenter>] [-cz <zCenter>]\n");
+	fprintf(stderr,"   [-std]\n");
 	fprintf(stderr,"Input taken from stdin in tipsy binary format.\n");
 	fprintf(stderr,"SEE MAN PAGE: fof(1) for more information.\n");
 	exit(1);
@@ -27,7 +28,7 @@ void main(int argc,char **argv)
 	char ach[80],tmp[80];
 	float fPeriod[3],fCenter[3],fEps;
 	int bDark,bGas,bStar;
-	int nMembers,nGroup,bVerbose;
+	int nMembers,nGroup,bVerbose,bStandard;
 	int sec,usec;
 	char *p;
 	
@@ -37,6 +38,7 @@ void main(int argc,char **argv)
 	bGas = 1;
 	bStar = 1;
 	bVerbose = 0;
+	bStandard = 0;
 	strcpy(ach,"fof");
 	i = 1;
 	for (j=0;j<3;++j) {
@@ -111,6 +113,10 @@ void main(int argc,char **argv)
 			bVerbose = 1;
 			++i;
 			}
+		else if (!strcmp(argv[i],"-std")) {
+		        bStandard = 1;
+			++i;
+		        }
 		else if (*argv[i] == '-') {
 			p = argv[i];
 			++p;
@@ -141,7 +147,7 @@ void main(int argc,char **argv)
 		else usage();
 		}
 	kdInit(&kd,nBucket,fPeriod,fCenter);
-	kdReadTipsy(kd,stdin,bDark,bGas,bStar);
+	kdReadTipsy(kd,stdin,bDark,bGas,bStar,bStandard);
 	kdBuildTree(kd);
 	kdTime(kd,&sec,&usec);
 	nGroup = kdFoF(kd,fEps);
@@ -154,7 +160,7 @@ void main(int argc,char **argv)
 		}
 	strcpy(tmp,ach);
 	strcat(tmp,".gtp");
-	kdOutGTP(kd,tmp);
+	kdOutGTP(kd,tmp,bStandard);
 	/*
 	 ** Now re-order the particles.
 	 */
