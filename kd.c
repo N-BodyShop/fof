@@ -24,7 +24,7 @@ void kdTime(KD kd,int *puSecond,int *puMicro)
 	}
 
 
-int kdInit(KD *pkd,int nBucket,float *fPeriod)
+int kdInit(KD *pkd,int nBucket,float *fPeriod,float *fCenter)
 {
 	KD kd;
 	int j;
@@ -32,7 +32,10 @@ int kdInit(KD *pkd,int nBucket,float *fPeriod)
 	kd = (KD)malloc(sizeof(struct kdContext));
 	assert(kd != NULL);
 	kd->nBucket = nBucket;
-	for (j=0;j<3;++j) kd->fPeriod[j] = fPeriod[j];
+	for (j=0;j<3;++j) {
+		kd->fPeriod[j] = fPeriod[j];
+		kd->fCenter[j] = fCenter[j];
+		}
 	kd->p = NULL;
 	kd->kdNodes = NULL;
 	*pkd = kd;
@@ -74,7 +77,9 @@ void kdReadTipsy(KD kd,FILE *fp,int bDark,int bGas,int bStar)
 		fread(&gp,sizeof(struct gas_particle),1,fp);
 		if (bGas) {
 			kd->p[nCnt].iOrder = nCnt;
+			kd->p[nCnt].fMass = gp.mass;
 			for (j=0;j<3;++j) kd->p[nCnt].r[j] = gp.pos[j];
+			for (j=0;j<3;++j) kd->p[nCnt].v[j] = gp.vel[j];
 			++nCnt;
 			}
 		}
@@ -82,7 +87,9 @@ void kdReadTipsy(KD kd,FILE *fp,int bDark,int bGas,int bStar)
 		fread(&dp,sizeof(struct dark_particle),1,fp);
 		if (bDark) {
 			kd->p[nCnt].iOrder = nCnt;
+			kd->p[nCnt].fMass = dp.mass;
 			for (j=0;j<3;++j) kd->p[nCnt].r[j] = dp.pos[j];
+			for (j=0;j<3;++j) kd->p[nCnt].v[j] = dp.vel[j];
 			++nCnt;
 			}
 		}
@@ -90,7 +97,9 @@ void kdReadTipsy(KD kd,FILE *fp,int bDark,int bGas,int bStar)
 		fread(&sp,sizeof(struct star_particle),1,fp);
 		if (bStar) {
 			kd->p[nCnt].iOrder = nCnt;
+			kd->p[nCnt].fMass = sp.mass;
 			for (j=0;j<3;++j) kd->p[nCnt].r[j] = sp.pos[j];
+			for (j=0;j<3;++j) kd->p[nCnt].v[j] = sp.vel[j];
 			++nCnt;
 			}
 		}
@@ -431,6 +440,98 @@ void kdOutGroup(KD kd,char *pszFile)
 		if (kd->bStar) fprintf(fp,"%d\n",kd->p[iCnt++].iGroup);
 		else fprintf(fp,"0\n");
 		}
+	fclose(fp);
+	}
+
+
+typedef struct GroupStats {
+	double m;
+	double r[3];
+	double v[3];
+	double rel[3];
+	double rm;
+	} GROUP_STAT;
+
+
+void kdOutGTP(KD kd,char *pszFile)
+{
+	FILE *fp;
+	GROUP_STAT *grp;
+	int pi,i,j;
+	struct dump h;
+	struct star_particle sp;
+	double d,d2;
+
+	fp = fopen(pszFile,"w");
+	assert(fp != NULL);
+	grp = malloc(kd->nGroup*sizeof(GROUP_STAT));
+	assert(grp != NULL);
+	for (i=1;i<kd->nGroup;++i) {
+		for (j=0;j<3;++j) grp[i].r[j] = 0.0;
+		for (j=0;j<3;++j) grp[i].v[j] = 0.0;
+		grp[i].m = 0.0;
+		grp[i].rm = 0.0;
+		}
+	for (pi=0;pi<kd->nActive;++pi) {
+		i = kd->p[pi].iGroup;
+		if (!i) continue;
+		for (j=0;j<3;++j) {
+		    grp[i].rel[j] = kd->p[pi].r[j];
+			}
+		}
+	for (pi=0;pi<kd->nActive;++pi) {
+		i = kd->p[pi].iGroup;
+		if (!i) continue;
+		grp[i].m += kd->p[pi].fMass;
+		for (j=0;j<3;++j) {
+			d = kd->p[pi].r[j] - grp[i].rel[j];
+			if (d > 0.5*kd->fPeriod[j]) d -= kd->fPeriod[j];
+			if (d <= -0.5*kd->fPeriod[j]) d += kd->fPeriod[j];
+			grp[i].r[j] += kd->p[pi].fMass*d;
+			}
+		for (j=0;j<3;++j) grp[i].v[j] += kd->p[pi].fMass*kd->p[pi].v[j];
+		}
+	for (i=1;i<kd->nGroup;++i) {
+		for (j=0;j<3;++j) {
+			grp[i].r[j] /= grp[i].m;
+			grp[i].r[j] += grp[i].rel[j];
+			if (grp[i].r[j] > kd->fCenter[j]+0.5*kd->fPeriod[j])
+				grp[i].r[j] -= kd->fPeriod[j];
+			if (grp[i].r[j] <= kd->fCenter[j]-0.5*kd->fPeriod[j])
+				grp[i].r[j] += kd->fPeriod[j];
+			}
+		for (j=0;j<3;++j) grp[i].v[j] /= grp[i].m;
+		}
+	for (pi=0;pi<kd->nActive;++pi) {
+		i = kd->p[pi].iGroup;
+		if (!i) continue;
+		d2 = 0.0;
+		for (j=0;j<3;++j) {
+			 d = kd->p[pi].r[j] - grp[i].r[j]; 
+			 if (d > 0.5*kd->fPeriod[j]) d -= kd->fPeriod[j];
+			 if (d <= -0.5*kd->fPeriod[j]) d += kd->fPeriod[j];
+			 d2 += d*d;
+			 }
+		if (d2 > grp[i].rm) grp[i].rm = d2;
+		}
+	h.time = kd->fTime;
+	h.nbodies = kd->nGroup-1;
+	h.nsph = 0;
+	h.ndark = 0;
+	h.nstar = h.nbodies;
+	h.ndim = 3;
+	fwrite(&h,sizeof(struct dump),1,fp);
+	for (i=1;i<kd->nGroup;++i) {
+		sp.mass = grp[i].m;
+		for (j=0;j<3;++j) sp.pos[j] = grp[i].r[j];
+		for (j=0;j<3;++j) sp.vel[j] = grp[i].v[j];
+		sp.eps = sqrt(grp[i].rm);
+		sp.tform = kd->fTime;
+		sp.metals = 0.0;
+		sp.phi = 0.0;
+		fwrite(&sp,sizeof(struct star_particle),1,fp);
+		}
+	free(grp);
 	fclose(fp);
 	}
 

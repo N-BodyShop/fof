@@ -19,7 +19,9 @@
 #define KD_ORDERTEMP	256
 
 typedef struct Particle {
+	float fMass;
 	float r[3];
+	float v[3];
 	int iGroup;
 	int iOrder;
 	} PARTICLE;
@@ -49,6 +51,7 @@ typedef struct kdContext {
 	int nActive;
 	float fTime;
 	float fPeriod[3];
+	float fCenter[3];
 	int nLevels;
 	int nNodes;
 	int nSplit;
@@ -182,7 +185,7 @@ typedef struct kdContext {
 
 
 void kdTime(KD,int *,int *);
-int kdInit(KD *,int,float *);
+int kdInit(KD *,int,float *,float *);
 void kdReadTipsy(KD,FILE *,int,int,int);
 void kdBuildTree(KD);
 int kdFoF(KD,float);
