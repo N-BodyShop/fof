@@ -6,6 +6,9 @@
 #include <assert.h>
 #include <rpc/types.h>
 #include <rpc/xdr.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "kd.h"
 #include "tipsydefs.h"
 
@@ -100,7 +103,7 @@ void kdReadTipsy(KD kd,FILE *fp,int bDark,int bGas,int bStar,int bStandard)
 		if (bStandard) {
 			xdr_vector(&xdrs, (char *) &gp,
 				   sizeof(struct gas_particle)/sizeof(Real),
-				   sizeof(Real), xdr_float);
+				   sizeof(Real), (xdrproc_t)xdr_float);
 		} else {
 			fread(&gp,sizeof(struct gas_particle),1,fp);
 		}
@@ -116,7 +119,7 @@ void kdReadTipsy(KD kd,FILE *fp,int bDark,int bGas,int bStar,int bStandard)
 		if (bStandard) {
 			xdr_vector(&xdrs, (char *) &dp,
 				   sizeof(struct dark_particle)/sizeof(Real),
-				   sizeof(Real), xdr_float);
+                       sizeof(Real), (xdrproc_t)xdr_float);
 		} else {
 		    fread(&dp,sizeof(struct dark_particle),1,fp);
 		}
@@ -132,7 +135,7 @@ void kdReadTipsy(KD kd,FILE *fp,int bDark,int bGas,int bStar,int bStandard)
 		if (bStandard) {
 			xdr_vector(&xdrs, (char *) &sp,
 				   sizeof(struct star_particle)/sizeof(Real),
-				   sizeof(Real), xdr_float);
+				   sizeof(Real), (xdrproc_t)xdr_float);
 		} else {
 			fread(&sp,sizeof(struct star_particle),1,fp);
 		}
@@ -307,6 +310,13 @@ void kdBuildTree(KD kd)
 	kdUpPass(kd,ROOT);
 	}
 
+#ifdef _OPENMP
+/* Returns the lock ID associated with particle pid. */
+int _hashLock(KD kd,int pid)
+{
+    return pid % (kd->nHash);
+}
+#endif
 
 int kdFoF(KD kd,float fEps)
 {
@@ -319,6 +329,22 @@ int kdFoF(KD kd,float fEps)
 	int *Fifo,iHead,iTail,nFifo;
 	float fEps2;
 	float dx,dy,dz,x,y,z,lx,ly,lz,sx,sy,sz,fDist2;
+#ifdef _OPENMP
+    int idSelf;
+    omp_lock_t *locks;
+
+	for (pn=0;pn<kd->nActive;++pn) kd->p[pn].iTouched = -1;
+    /* We really want to make an independent lock for each particle.  However, each lock
+     * seems to use a buttload of memory (something like 312 bytes per lock).  Therefore,
+     * to ensure that we don't use too much memory, only use 1 lock per 100 particles.
+     * This should still provide very low lock contention while not using oodles of 
+     * memory at the same time, since it is extremely rare that two threads will be looking
+     * two particles that map to the same lock at the same time.*/
+    kd->nHash = (int)(kd->nActive/100);
+    locks = (omp_lock_t *)malloc(kd->nHash*sizeof(omp_lock_t));
+    assert(locks != NULL);
+    for (pn=0;pn<kd->nHash;++pn) omp_init_lock(&locks[pn]);
+#endif
 
 	p = kd->p;
 	c = kd->kdNodes;
@@ -327,19 +353,41 @@ int kdFoF(KD kd,float fEps)
 	lz = kd->fPeriod[2];
 	fEps2 = fEps*fEps;
 	for (pn=0;pn<kd->nActive;++pn) p[pn].iGroup = 0;
-	nFifo = kd->nActive;
+#pragma omp parallel default(none) shared(kd,locks,p,c,lx,ly,lz,fEps2) \
+    private(pi,pj,pn,cp,iGroup,Fifo,iHead,iTail,dx,dy,dz,x,y,z,sx,sy,sz,fDist2,idSelf,nFifo)
+  {
+#ifdef _OPENMP
+    nFifo = kd->nActive/omp_get_num_threads();
+    idSelf = omp_get_thread_num();
+#else
+    nFifo = kd->nActive;
+#endif
 	Fifo = (int *)malloc(nFifo*sizeof(int));
 	assert(Fifo != NULL);
 	iHead = 0;
 	iTail = 0;
 	iGroup = 0;
+#pragma omp for schedule(runtime)
 	for (pn=0;pn<kd->nActive;++pn) {
 		if (p[pn].iGroup) continue;
-		++iGroup;
 		/*
 		 ** Mark it and add to the do-fifo.
 		 */
+#ifdef _OPENMP
+        omp_set_lock(&locks[_hashLock(kd,pn)]);
+        if (p[pn].iTouched >= 0 && p[pn].iTouched < idSelf ) {
+            assert(p[pn].iGroup > 0);
+            omp_unset_lock(&locks[_hashLock(kd,pn)]);
+            continue;
+        }
+        p[pn].iTouched = idSelf;
+        iGroup = pn+1;
 		p[pn].iGroup = iGroup;
+        omp_unset_lock(&locks[_hashLock(kd,pn)]);
+#else
+		++iGroup;
+		p[pn].iGroup = iGroup;
+#endif
 		Fifo[iTail++] = pn;
 		if (iTail == nFifo) iTail = 0;
 		while (iHead != iTail) {
@@ -363,7 +411,23 @@ int kdFoF(KD kd,float fEps)
 					}
 				else {
 					for (pj=c[cp].pLower;pj<=c[cp].pUpper;++pj) {
+#ifdef _OPENMP
+                        if (p[pj].iGroup == iGroup) {
+                            /* We have already looked at this particle */
+                            //assert(p[pj].iTouched == idSelf);  particle is not locked.
+                            continue;
+                        }
+                        if (p[pj].iTouched >= 0 && p[pj].iTouched < idSelf) {
+                            /* Somebody more important than us is already looking at this
+                             * particle.  However, we do not yet know if this particle belongs
+                             * in our group, so just skip it to save time but don't restart the
+                             * entire group. */
+                            // assert(p[pj].iGroup > 0); particle is not locked
+                            continue;
+                        }
+#else
 						if (p[pj].iGroup) continue;
+#endif
 						dx = sx - p[pj].r[0];
 						dy = sy - p[pj].r[1];
 						dz = sz - p[pj].r[2];
@@ -372,7 +436,24 @@ int kdFoF(KD kd,float fEps)
 							/*
 							 ** Mark it and add to the do-fifo.
 							 */
+#ifdef _OPENMP
+                            omp_set_lock(&locks[_hashLock(kd,pj)]);
+                            if (p[pj].iTouched >= 0 && p[pj].iTouched < idSelf) {
+                                /* Now we know this particle should be in our group.  If somebody more
+                                 * important than us touched it, about the entire group. */
+                                assert(p[pj].iGroup > 0);
+                                omp_unset_lock(&locks[_hashLock(kd,pj)]);
+                                iHead = iTail;
+                                /*printf("Thread %d: Aborting group %d. p[%d].iOrder  p.iGroup=%d  p.iTouched=%d (Per-Particle2)\n",
+                                  idSelf, iGroup, pj, p[pj].iOrder, p[pj].iGroup, p[pj].iTouched);*/
+                                goto RestartSnake;
+                            }
+                            p[pj].iTouched = idSelf;
 							p[pj].iGroup = iGroup;
+                            omp_unset_lock(&locks[_hashLock(kd,pj)]);
+#else
+							p[pj].iGroup = iGroup;
+#endif
 							Fifo[iTail++] = pj;
 							if (iTail == nFifo) iTail = 0;
 							}
@@ -383,22 +464,68 @@ int kdFoF(KD kd,float fEps)
 					}
 			ContainedCell:
 				for (pj=c[cp].pLower;pj<=c[cp].pUpper;++pj) {
+#ifdef _OPENMP
+                    if (p[pj].iGroup == iGroup) continue;
+                    if (p[pj].iTouched >= 0 && p[pj].iTouched < idSelf) {
+                        /* Somebody more important that us is already looking at this
+                         * group.  Abort this entire group! */
+                        //assert(p[pj].iGroup > 0); particle is not locked
+                        iHead = iTail;
+                        /*printf("Thread %d: Aborting group %d. p[%d].iOrder=%d  p.iGroup=%d  p.iTouched=%d (Per-Cell1)\n",
+                          idSelf, iGroup, pj, p[pj].iOrder, p[pj].iGroup, p[pj].iTouched);*/
+                        goto RestartSnake;
+                    }
+#else
 					if (p[pj].iGroup) continue;
+#endif                    
 					/*
 					 ** Mark it and add to the do-fifo.
 					 */
+#ifdef _OPENMP
+                    omp_set_lock(&locks[_hashLock(kd,pj)]);
+                    if (p[pj].iTouched >= 0 && p[pj].iTouched < idSelf) {
+                        /* Check again in case somebody touched it before the lock. */
+                        assert(p[pj].iGroup > 0);
+                        omp_unset_lock(&locks[_hashLock(kd,pj)]);
+                        iHead = iTail;
+                        /*printf("Thread %d: Aborting group %d.  p[%d].iGroup=%d  p[%d].iTouched=%d (Per-Cell2)\n",
+                          idSelf, iGroup, pj, p[pj].iGroup, pj, p[pj].iTouched);*/
+                        goto RestartSnake;
+                    }
+                    p[pj].iTouched = idSelf;
+                    p[pj].iGroup = iGroup;
+                    omp_unset_lock(&locks[_hashLock(kd,pj)]);
+#else
 					p[pj].iGroup = iGroup;
+#endif
 					Fifo[iTail++] = pj;
 					if (iTail == nFifo) iTail = 0;
 					}
 			GetNextCell:
 				SETNEXT(cp);
 				if (cp == ROOT) break;
-				}
-			}
-		}
+            }
+        } /* End while(iHead != iTail) */
+#ifdef _OPENMP
+    RestartSnake:
+#endif
+        assert(iHead == iTail);
+    }
 	free(Fifo);
+  }  /* End of the OpenMP PARALLEL section */
+
+#ifdef _OPENMP
+    /* Now we have count how many groups there are.  This is straightforward,
+     * since the number of groups is the number of particles whose groupID equals
+     * their particleID+1. */
+    pj = 0;
+	for (pn=0;pn<kd->nActive;++pn)
+        if (p[pn].iGroup == pn+1) ++pj;
+    kd->nGroup = (kd->nActive)+1;
+    free(locks);
+#else
 	kd->nGroup = iGroup+1;
+#endif
 	return(kd->nGroup-1);
 	}
 
@@ -584,7 +711,7 @@ void kdOutGTP(KD kd,char *pszFile,int bStandard)
 		if (bStandard) {
 			xdr_vector(&xdrs, (char *) &sp,
 				   sizeof(struct star_particle)/sizeof(Real),
-				   sizeof(Real), xdr_float);
+				   sizeof(Real), (xdrproc_t)xdr_float);
 		        }
 		else {
 			fwrite(&sp,sizeof(struct star_particle),1,fp);

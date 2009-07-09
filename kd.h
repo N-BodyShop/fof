@@ -24,6 +24,9 @@ typedef struct Particle {
 	float v[3];
 	int iGroup;
 	int iOrder;
+#ifdef _OPENMP
+    int iTouched;
+#endif
 	} PARTICLE;
 
 typedef struct bndBound {
@@ -60,6 +63,9 @@ typedef struct kdContext {
 	int nGroup;
 	int uSecond;
 	int uMicro;
+#ifdef _OPENMP
+    int nHash;
+#endif
 	} * KD;
 
 

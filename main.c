@@ -4,6 +4,10 @@
 #include <string.h>
 #include <ctype.h>
 #include <assert.h>
+#include <time.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "kd.h"
 
 
@@ -17,11 +21,12 @@ void usage(void)
 	fprintf(stderr,"   [-cx <xCenter>] [-cy <yCenter>] [-cz <zCenter>]\n");
 	fprintf(stderr,"   [-std]\n");
 	fprintf(stderr,"Input taken from stdin in tipsy binary format.\n");
+    fprintf(stderr,"Default is to link all types of particles.\n");
 	fprintf(stderr,"SEE MAN PAGE: fof(1) for more information.\n");
 	exit(1);
 	}
 
-void main(int argc,char **argv)
+int main(int argc,char **argv)
 {
 	KD kd;
 	int nBucket,i,j;
@@ -31,8 +36,9 @@ void main(int argc,char **argv)
 	int nMembers,nGroup,bVerbose,bStandard;
 	int sec,usec;
 	char *p;
+    long lStart,lStartAll;
 	
-   	nBucket = 16;
+   	nBucket = 32;
 	nMembers = 8;
 	bDark = 1;
 	bGas = 1;
@@ -146,17 +152,43 @@ void main(int argc,char **argv)
 			}
 		else usage();
 		}
+
+#ifdef _OPENMP 
+#pragma omp parallel
+        if (omp_get_thread_num() == 0)
+            printf("FOF (OpenMP) running on %d threads.\n",omp_get_num_threads());
+#else
+        printf("FOF (serial) running on 1 thread.\n");
+#endif
 	kdInit(&kd,nBucket,fPeriod,fCenter);
+    /* Time the input phase */
+    lStart = time(0);
+    lStartAll = lStart;
+	kdTime(kd,&sec,&usec);
 	kdReadTipsy(kd,stdin,bDark,bGas,bStar,bStandard);
+	kdTime(kd,&sec,&usec);
+    if (bVerbose) {
+        printf("Read input file of %d total particles.\n",kd->nParticles);
+        printf("READ CPU TIME:  %d.%06d secs\n",sec,usec);
+        printf("READ WALL TIME: %d secs\n",(int)(time(0)-lStart));
+        }
 	kdBuildTree(kd);
+    if (bVerbose) printf("Tree built.  Beginning FOF...\n");
+    lStart = time(0);
 	kdTime(kd,&sec,&usec);
 	nGroup = kdFoF(kd,fEps);
 	kdTime(kd,&sec,&usec);
-	if (bVerbose) printf("Number of initial groups:%d\n",nGroup);
+	if (bVerbose) {
+        printf("Number of initial groups: %d\n",nGroup);
+#ifdef _OPENMP
+        printf("Size of particle lock array: %d\n",kd->nHash);
+#endif
+        }
 	nGroup = kdTooSmall(kd,nMembers);
 	if (bVerbose) {
-		printf("Number of groups:%d\n",nGroup);
-		printf("FOF CPU TIME: %d.%06d secs\n",sec,usec);
+		printf("Number of groups: %d\n",nGroup);
+		printf("FOF CPU TIME:  %d.%06d secs\n",sec,usec);
+        printf("FOF WALL TIME: %d\n",(int)(time(0)-lStart));
 		}
 	strcpy(tmp,ach);
 	strcat(tmp,".gtp");
@@ -169,12 +201,6 @@ void main(int argc,char **argv)
 	strcat(tmp,".grp");
 	kdOutGroup(kd,tmp);
 	kdFinish(kd);
+    printf("FOF completed in %d wallclock seconds\n.",(int)(time(0)-lStartAll));
 	}
-
-
-
-
-
-
-
 
