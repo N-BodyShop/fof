@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <float.h>
 #include <string.h>
 #include <ctype.h>
 #include <assert.h>
@@ -48,7 +49,7 @@ int main(int argc,char **argv)
 	strcpy(ach,"fof");
 	i = 1;
 	for (j=0;j<3;++j) {
-		fPeriod[j] = HUGE;
+		fPeriod[j] = FLT_MAX;
 		fCenter[j] = 0.0;
 		}
 	while (i < argc) {
