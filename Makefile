@@ -20,11 +20,11 @@
 #CC = icc
 #CFLAGS = -O3 -ipo -static
 # Compile Intel Openmp
-CC = icc
-CFLAGS = -O3 -ipo -openmp -openmp-report2
+CC = cc
+CFLAGS = -O3 -I/usr/include/tirpc
 
 
-LIBS	=   -lm
+LIBS	=   -lm -ltirpc
 
 default:	fof clean
 
